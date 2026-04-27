@@ -94,6 +94,8 @@ def _append_history(chat_id, role, text):
 SYSTEM_PROMPT = """Ты — умный ассистент для управления подписками. Тебя зовут Ася-бот.
 Пользователь общается с тобой на естественном языке. Ты должен понять намерение и вернуть JSON.
 
+Сегодня: {today}
+
 Текущие подписки пользователя:
 {subs}
 
@@ -136,7 +138,7 @@ def _ask_ai(user_text, subs, history):
 
     body = {
         "contents": contents,
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT.format(subs=_format_subs(subs))}]},
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT.format(subs=_format_subs(subs), today=time.strftime("%Y-%m-%d, %A"))}]},
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
     }
 
