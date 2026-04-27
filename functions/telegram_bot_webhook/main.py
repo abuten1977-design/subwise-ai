@@ -64,8 +64,14 @@ def _send_message(chat_id, text):
 def _user_subs(user_id):
     return db.collection("users").document(str(user_id)).collection("subscriptions")
 
+def _user_savings(user_id):
+    return db.collection("users").document(str(user_id)).collection("savings")
+
 def _get_subscriptions(user_id):
     return [doc.to_dict() for doc in _user_subs(user_id).stream()]
+
+def _get_savings(user_id):
+    return [doc.to_dict() for doc in _user_savings(user_id).stream()]
 
 def _format_subs(subs):
     if not subs:
@@ -74,6 +80,19 @@ def _format_subs(subs):
     for s in subs:
         cur = s.get("currency", "$")
         lines.append(f"- {s['name']} ({s['cost']:.2f} {cur}) {s.get('renewal_date', '')}")
+    return "\n".join(lines)
+
+def _format_savings(savings):
+    if not savings:
+        return "Накоплений пока нет."
+    lines = [f"Накопления ({len(savings)}):"]
+    for s in savings:
+        cur = s.get("currency", "$")
+        saved = s.get("saved", 0)
+        goal = s.get("goal", 0)
+        pct = int(saved / goal * 100) if goal > 0 else 0
+        remain = goal - saved
+        lines.append(f"- {s['name']}: {saved:.0f}/{goal:.0f} {cur} ({pct}%) взнос {s.get('monthly', 0):.0f} {cur} {s.get('day', '?')}-го числа. Осталось {remain:.0f} {cur}")
     return "\n".join(lines)
 
 def _get_history(chat_id):
@@ -91,7 +110,7 @@ def _append_history(chat_id, role, text):
     _save_history(chat_id, history)
     return history
 
-SYSTEM_PROMPT = """Ты — умный ассистент для управления подписками. Тебя зовут Ася-бот.
+SYSTEM_PROMPT = """Ты — умный ассистент для управления подписками и накоплениями. Тебя зовут Ася-бот.
 Пользователь общается с тобой на естественном языке. Ты должен понять намерение и вернуть JSON.
 
 Сегодня: {today}
@@ -99,22 +118,31 @@ SYSTEM_PROMPT = """Ты — умный ассистент для управле�
 Текущие подписки пользователя:
 {subs}
 
+Текущие накопления пользователя:
+{savings}
+
 Верни ТОЛЬКО валидный JSON (без markdown, без ```), одно из:
 - {{"action":"add","name":"...","cost":число,"currency":"...","renewal_date":"YYYY-MM-DD","reply":"..."}}
 - {{"action":"delete","name":"...","reply":"..."}}
 - {{"action":"list","reply":"..."}}
 - {{"action":"advice","reply":"..."}}
+- {{"action":"savings_add","name":"...","goal":число,"monthly":число,"currency":"...","day":число,"reply":"..."}}
+- {{"action":"savings_deposit","name":"...","amount":число,"reply":"..."}}
+- {{"action":"savings_list","reply":"..."}}
+- {{"action":"savings_delete","name":"...","reply":"..."}}
 - {{"action":"chat","reply":"..."}}
 
 Правила:
 - У пользователя подписки в РАЗНЫХ валютах (доллары, кроны, гривны и др.)
 - currency — сохраняй как пользователь сказал: "$", "Kč", "грн", "€" и т.д.
 - Если пользователь не указал валюту — спроси в reply, action="chat".
-- Если хочет добавить — извлеки name, cost, currency, renewal_date. Если чего-то не хватает — спроси.
+- Если хочет добавить подписку — извлеки name, cost, currency, renewal_date. Если чего-то не хватает — спроси.
 - Если хочет удалить — извлеки name.
-- Если спрашивает список — action="list", перечисли каждую подписку с её валютой.
-- Если просит совет — action="advice", проанализируй.
-- Для обычного разговора — action="chat".
+- Если спрашивает список — action="list", перечисли подписки. Если просит накопления — action="savings_list".
+- Если просит совет — action="advice", проанализируй подписки И накопления.
+- Накопление: "коплю на машину 5000 долларов по 100 каждое 15 число" → savings_add.
+- Внесение: "внёс 100 на машину" → savings_deposit.
+- В reply для накоплений показывай прогресс: сколько из скольки, процент, сколько осталось.
 - reply на русском, дружелюбно и кратко.
 - Учитывай историю разговора."""
 
@@ -128,7 +156,7 @@ def _extract_text(resp_json):
         pass
     return None
 
-def _ask_ai(user_text, subs, history):
+def _ask_ai(user_text, subs, savings, history):
     api_key = _get_secret("gemini-api-key")
 
     contents = []
@@ -138,7 +166,7 @@ def _ask_ai(user_text, subs, history):
 
     body = {
         "contents": contents,
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT.format(subs=_format_subs(subs), today=time.strftime("%Y-%m-%d, %A"))}]},
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT.format(subs=_format_subs(subs), savings=_format_savings(savings), today=time.strftime("%Y-%m-%d, %A"))}]},
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
     }
 
@@ -174,6 +202,7 @@ def _handle_ai_result(result, user_id):
     action = result.get("action", "chat")
     reply = result.get("reply", "")
     col = _user_subs(user_id)
+    sav = _user_savings(user_id)
 
     if action == "add":
         col.document(result["name"]).set({
@@ -189,6 +218,35 @@ def _handle_ai_result(result, user_id):
         reply = f"🗑 {reply or result['name'] + ' удалена.'}"
     elif action == "list":
         reply = reply or _format_subs(_get_subscriptions(user_id))
+    elif action == "savings_add":
+        sav.document(result["name"]).set({
+            "name": result["name"],
+            "goal": float(result["goal"]),
+            "saved": 0,
+            "monthly": float(result.get("monthly", 0)),
+            "currency": result.get("currency", "$"),
+            "day": int(result.get("day", 1)),
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        reply = f"🎯 {reply or result['name'] + ' создано.'}"
+    elif action == "savings_deposit":
+        doc = sav.document(result["name"]).get()
+        if doc.exists:
+            data = doc.to_dict()
+            new_saved = data.get("saved", 0) + float(result["amount"])
+            sav.document(result["name"]).update({"saved": new_saved})
+            goal = data.get("goal", 0)
+            cur = data.get("currency", "$")
+            pct = int(new_saved / goal * 100) if goal > 0 else 0
+            remain = goal - new_saved
+            reply = reply or f"✅ Внесено. {result['name']}: {new_saved:.0f}/{goal:.0f} {cur} ({pct}%). Осталось {remain:.0f} {cur}"
+        else:
+            reply = f"❌ Накопление '{result['name']}' не найдено."
+    elif action == "savings_list":
+        reply = reply or _format_savings(_get_savings(user_id))
+    elif action == "savings_delete":
+        sav.document(result["name"]).delete()
+        reply = f"🗑 {reply or result['name'] + ' удалено.'}"
     else:
         reply = reply or "Не понял, попробуй ещё раз."
 
@@ -196,9 +254,10 @@ def _handle_ai_result(result, user_id):
 
 def _handle_ai_tg(chat_id, text):
     subs = _get_subscriptions(chat_id)
+    savings = _get_savings(chat_id)
     history = _append_history(chat_id, "user", text)
     try:
-        result = _ask_ai(text, subs, history)
+        result = _ask_ai(text, subs, savings, history)
     except Exception as e:
         print(f"AI error (all models): {e}")
         _append_history(chat_id, "bot", "⏳ AI временно недоступен, попробуй через минуту.")
@@ -211,9 +270,10 @@ def _handle_ai_tg(chat_id, text):
 def _handle_web_chat(text, user_id):
     """Handle AI chat from web — no Telegram, return JSON response."""
     subs = _get_subscriptions(user_id)
+    savings = _get_savings(user_id)
     history = _append_history(user_id, "user", text)
     try:
-        result = _ask_ai(text, subs, history)
+        result = _ask_ai(text, subs, savings, history)
     except Exception as e:
         print(f"Web AI error: {e}")
         return {"action": "error", "reply": "⏳ AI временно недоступен, попробуй через минуту."}
