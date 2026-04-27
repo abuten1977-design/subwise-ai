@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#6c63ff">
+<meta name="description" content="Управление подписками — Ася-бот">
+<title>Ася — Подписки</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;--surface:#16213e;--card:#0f3460;
+  --accent:#6c63ff;--accent2:#e94560;--text:#eee;--muted:#aaa;
+  --radius:12px;--shadow:0 4px 20px rgba(0,0,0,.3);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;padding:0 0 100px}
+a{color:var(--accent)}
+/* Skip link */
+.skip-link{position:absolute;top:-100%;left:0;background:var(--accent);color:#fff;
+  padding:8px 16px;z-index:1000;font-size:1rem;border-radius:0 0 var(--radius) 0}
+.skip-link:focus{top:0}
+/* Header */
+header{background:var(--surface);padding:20px;text-align:center;
+  border-bottom:3px solid var(--accent);position:sticky;top:0;z-index:10}
+header h1{font-size:1.5rem;font-weight:700}
+header p{color:var(--muted);font-size:.9rem;margin-top:4px}
+/* Main */
+main{max-width:600px;margin:0 auto;padding:16px}
+/* Summary */
+.summary{background:linear-gradient(135deg,var(--accent),var(--accent2));
+  border-radius:var(--radius);padding:20px;margin-bottom:20px;
+  box-shadow:var(--shadow);text-align:center}
+.summary .total{font-size:2rem;font-weight:700}
+.summary .count{font-size:.9rem;opacity:.85;margin-top:4px}
+/* Cards */
+.sub-list{list-style:none;display:flex;flex-direction:column;gap:12px}
+.sub-card{background:var(--card);border-radius:var(--radius);padding:16px;
+  box-shadow:var(--shadow);display:flex;justify-content:space-between;align-items:center;
+  transition:transform .15s}
+.sub-card:hover,.sub-card:focus-within{transform:translateY(-2px)}
+.sub-info h3{font-size:1.1rem;margin-bottom:4px}
+.sub-info p{color:var(--muted);font-size:.85rem}
+.sub-cost{font-size:1.2rem;font-weight:700;color:var(--accent);white-space:nowrap}
+.sub-actions{display:flex;gap:8px;margin-left:12px}
+.btn-del{background:var(--accent2);color:#fff;border:none;border-radius:8px;
+  padding:8px 12px;cursor:pointer;font-size:.85rem;transition:opacity .15s}
+.btn-del:hover,.btn-del:focus{opacity:.8}
+.btn-del:focus-visible{outline:3px solid #fff;outline-offset:2px}
+/* Empty state */
+.empty{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty svg{width:64px;height:64px;margin-bottom:12px;opacity:.5}
+/* Add form */
+.add-section{margin-top:24px}
+.add-section h2{font-size:1.1rem;margin-bottom:12px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-grid .full{grid-column:1/-1}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:4px}
+input,select{width:100%;padding:10px 12px;border:2px solid transparent;
+  border-radius:8px;background:var(--surface);color:var(--text);font-size:1rem;
+  transition:border-color .15s}
+input:focus,select:focus{border-color:var(--accent);outline:none}
+input::placeholder{color:#666}
+.btn-add{grid-column:1/-1;background:var(--accent);color:#fff;border:none;
+  border-radius:8px;padding:12px;font-size:1rem;font-weight:600;cursor:pointer;
+  transition:opacity .15s;margin-top:4px}
+.btn-add:hover,.btn-add:focus{opacity:.85}
+.btn-add:focus-visible{outline:3px solid #fff;outline-offset:2px}
+.btn-add:disabled{opacity:.5;cursor:not-allowed}
+/* Chat */
+.chat-section{margin-top:24px;background:var(--surface);border-radius:var(--radius);
+  padding:16px;box-shadow:var(--shadow)}
+.chat-section h2{font-size:1.1rem;margin-bottom:12px}
+.chat-messages{max-height:200px;overflow-y:auto;margin-bottom:12px;
+  display:flex;flex-direction:column;gap:8px}
+.chat-msg{padding:8px 12px;border-radius:8px;max-width:85%;font-size:.9rem;line-height:1.4}
+.chat-msg.user{background:var(--accent);align-self:flex-end}
+.chat-msg.bot{background:var(--card);align-self:flex-start}
+.chat-input-row{display:flex;gap:8px}
+.chat-input-row input{flex:1}
+.btn-send{background:var(--accent);color:#fff;border:none;border-radius:8px;
+  padding:10px 16px;cursor:pointer;font-size:1rem}
+.btn-send:focus-visible{outline:3px solid #fff;outline-offset:2px}
+/* Loading */
+.loading{text-align:center;padding:20px;color:var(--muted)}
+/* Toast */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:#333;color:#fff;padding:12px 24px;border-radius:8px;
+  font-size:.9rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:100}
+.toast.show{opacity:1}
+/* Focus visible */
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+/* Reduced motion */
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+/* Screen reader only */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+</style>
+</head>
+<body>
+<a href="#main" class="skip-link">Перейти к содержимому</a>
+
+<header role="banner">
+  <h1>🤖 Ася — Подписки</h1>
+  <p>Управляй подписками легко</p>
+  <button id="btn-logout" style="display:none;background:var(--accent2);color:#fff;border:none;padding:6px 14px;border-radius:var(--radius);cursor:pointer;font-size:.85rem;margin-top:6px" aria-label="Выйти">Выйти</button>
+</header>
+
+<!-- Auth screen -->
+<section id="auth-screen" class="add-section" style="max-width:400px;margin:40px auto" aria-label="Авторизация">
+  <h2>🔑 Вход</h2>
+  <p style="color:var(--muted);margin-bottom:16px">Напиши <b>/web</b> боту в Telegram и введи полученный код:</p>
+  <form id="auth-form" class="form-grid" novalidate>
+    <div class="full">
+      <label for="auth-code">Код из Telegram</label>
+      <input id="auth-code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required aria-required="true" autocomplete="one-time-code" style="font-size:1.5rem;text-align:center;letter-spacing:.3em">
+    </div>
+    <button type="submit" class="btn-add" id="btn-auth">Войти</button>
+  </form>
+  <p id="auth-error" style="color:var(--accent2);margin-top:10px;display:none" role="alert"></p>
+</section>
+
+<main id="main" role="main" aria-label="Управление подписками" style="display:none">
+
+  <!-- Summary -->
+  <section class="summary" aria-label="Итого по подпискам">
+    <div class="total" id="total" aria-live="polite">—</div>
+    <div class="count" id="count"></div>
+  </section>
+
+  <!-- Subscription list -->
+  <section aria-label="Список подписок">
+    <h2 class="sr-only">Подписки</h2>
+    <div id="list-area">
+      <p class="loading" role="status">Загрузка...</p>
+    </div>
+  </section>
+
+  <!-- Add form -->
+  <section class="add-section" aria-label="Добавить подписку">
+    <h2>➕ Добавить подписку</h2>
+    <form id="add-form" class="form-grid" novalidate>
+      <div class="full">
+        <label for="f-name">Название</label>
+        <input id="f-name" type="text" placeholder="Netflix" required aria-required="true" autocomplete="off">
+      </div>
+      <div>
+        <label for="f-cost">Цена</label>
+        <input id="f-cost" type="number" step="0.01" min="0" placeholder="149" required aria-required="true">
+      </div>
+      <div>
+        <label for="f-currency">Валюта</label>
+        <select id="f-currency" aria-label="Валюта">
+          <option value="Kč">Kč (кроны)</option>
+          <option value="$">$ (доллары)</option>
+          <option value="грн">грн (гривны)</option>
+          <option value="€">€ (евро)</option>
+        </select>
+      </div>
+      <div class="full">
+        <label for="f-date">Дата продления</label>
+        <input id="f-date" type="date" required aria-required="true">
+      </div>
+      <button type="submit" class="btn-add" id="btn-add">Добавить</button>
+    </form>
+  </section>
+
+  <!-- AI Chat -->
+  <section class="chat-section" aria-label="Чат с AI-ассистентом">
+    <h2>💬 Спроси Асю</h2>
+    <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="Сообщения чата"></div>
+    <div class="chat-input-row">
+      <label for="chat-input" class="sr-only">Сообщение для AI</label>
+      <input id="chat-input" type="text" placeholder="Что посоветуешь удалить?" autocomplete="off">
+      <button class="btn-send" id="btn-send" aria-label="Отправить сообщение">➤</button>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+
+<script>
+const API = 'https://us-central1-autofriend-app-1773430739.cloudfunctions.net/handle_subscription_crud';
+const WEBHOOK = 'https://us-central1-autofriend-app-1773430739.cloudfunctions.net/telegram_bot_webhook';
+
+const $=s=>document.querySelector(s);
+const listArea=$('#list-area'), totalEl=$('#total'), countEl=$('#count');
+const form=$('#add-form'), chatMessages=$('#chat-messages');
+const chatInput=$('#chat-input'), toast=$('#toast');
+
+let USER_ID = localStorage.getItem('asyabot_user_id') || '';
+
+// Auth
+function showApp(){
+  $('#auth-screen').style.display='none';
+  $('#main').style.display='';
+  $('#btn-logout').style.display='inline-block';
+  loadSubs();
+}
+function showAuth(){
+  $('#auth-screen').style.display='';
+  $('#main').style.display='none';
+  $('#btn-logout').style.display='none';
+}
+if(USER_ID){showApp();}
+
+$('#auth-form').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const code=$('#auth-code').value.trim();
+  if(code.length!==6)return;
+  $('#btn-auth').disabled=true;
+  try{
+    const r=await fetch(WEBHOOK,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({verify_code:true,code})});
+    const d=await r.json();
+    if(d.ok){
+      USER_ID=d.user_id;
+      localStorage.setItem('asyabot_user_id',USER_ID);
+      showApp();
+    }else{
+      $('#auth-error').textContent=d.error||'Неверный код';
+      $('#auth-error').style.display='';
+    }
+  }catch(err){$('#auth-error').textContent='Ошибка сети';$('#auth-error').style.display='';}
+  $('#btn-auth').disabled=false;
+});
+
+$('#btn-logout').addEventListener('click',()=>{
+  USER_ID='';localStorage.removeItem('asyabot_user_id');showAuth();
+});
+
+function showToast(msg){
+  toast.textContent=msg;toast.classList.add('show');
+  setTimeout(()=>toast.classList.remove('show'),2500);
+}
+
+async function loadSubs(){
+  try{
+    const r=await fetch(API+'?user_id='+encodeURIComponent(USER_ID));
+    const subs=await r.json();
+    renderSubs(subs);
+  }catch(e){listArea.innerHTML='<p class="empty">Ошибка загрузки</p>';}
+}
+
+function renderSubs(subs){
+  if(!subs.length){
+    listArea.innerHTML=`<div class="empty" role="status">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+      </svg>
+      <p>Подписок пока нет</p></div>`;
+    totalEl.textContent='0';countEl.textContent='Нет подписок';
+    return;
+  }
+  // Group by currency
+  const byCur={};
+  subs.forEach(s=>{const c=s.currency||'$';if(!byCur[c])byCur[c]=0;byCur[c]+=s.cost;});
+  const parts=Object.entries(byCur).map(([c,v])=>`${v.toFixed(0)} ${c}`);
+  totalEl.textContent=parts.join(' + ');
+  countEl.textContent=`${subs.length} подпис${subs.length===1?'ка':subs.length<5?'ки':'ок'}`;
+
+  let html='<ul class="sub-list" role="list">';
+  subs.forEach(s=>{
+    const cur=s.currency||'$';
+    const dateStr=s.renewal_date||'';
+    html+=`<li class="sub-card" role="listitem">
+      <div class="sub-info">
+        <h3>${esc(s.name)}</h3>
+        <p>Продление: ${esc(dateStr)}</p>
+      </div>
+      <span class="sub-cost" aria-label="Стоимость ${s.cost} ${cur}">${s.cost.toFixed(0)} ${esc(cur)}</span>
+      <div class="sub-actions">
+        <button class="btn-del" data-name="${esc(s.name)}" aria-label="Удалить ${esc(s.name)}">✕</button>
+      </div>
+    </li>`;
+  });
+  html+='</ul>';
+  listArea.innerHTML=html;
+
+  listArea.querySelectorAll('.btn-del').forEach(btn=>{
+    btn.addEventListener('click',async()=>{
+      const name=btn.dataset.name;
+      if(!confirm(`Удалить ${name}?`))return;
+      btn.disabled=true;
+      try{
+        await fetch(API,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,user_id:USER_ID})});
+        showToast(`🗑 ${name} удалена`);loadSubs();
+      }catch(e){showToast('Ошибка удаления');}
+    });
+  });
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+// Add form
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const name=$('#f-name').value.trim();
+  const cost=parseFloat($('#f-cost').value);
+  const currency=$('#f-currency').value;
+  const date=$('#f-date').value;
+  if(!name||isNaN(cost)||!date){showToast('Заполни все поля');return;}
+
+  const btn=$('#btn-add');btn.disabled=true;btn.textContent='Добавляю...';
+  try{
+    await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,cost,renewal_date:date,currency,user_id:USER_ID})});
+    showToast(`✅ ${name} добавлена`);form.reset();loadSubs();
+  }catch(e){showToast('Ошибка');}
+  btn.disabled=false;btn.textContent='Добавить';
+});
+
+// Chat
+function addChatMsg(text,role){
+  const div=document.createElement('div');
+  div.className=`chat-msg ${role}`;
+  div.textContent=text;
+  div.setAttribute('role','status');
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop=chatMessages.scrollHeight;
+}
+
+async function sendChat(){
+  const text=chatInput.value.trim();if(!text)return;
+  addChatMsg(text,'user');chatInput.value='';
+  addChatMsg('...','bot');
+  try{
+    // Use the webhook with a fake update structure for AI processing
+    const r=await fetch(WEBHOOK,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({web_chat:true,text,user_id:USER_ID})});
+    const data=await r.json();
+    chatMessages.lastChild.textContent=data.reply||'Нет ответа';
+    if(data.action==='add'||data.action==='delete')loadSubs();
+  }catch(e){chatMessages.lastChild.textContent='Ошибка связи';}
+}
+
+$('#btn-send').addEventListener('click',sendChat);
+chatInput.addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
+
+// Init
+loadSubs();
+
+// PWA
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js');}
+</script>
+</body>
+</html>
