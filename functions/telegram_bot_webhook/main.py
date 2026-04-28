@@ -338,7 +338,7 @@ def _search_subs(user_id, query):
             "Content-Type": "application/json",
             "x-goog-user-project": PROJECT_ID
         }, json={
-            "query": f"{query} user {user_id}",
+            "query": query,
             "pageSize": 10
         }, timeout=10)
         if resp.status_code != 200:
@@ -347,7 +347,7 @@ def _search_subs(user_id, query):
         results = []
         for r in resp.json().get("results", []):
             sd = r.get("document", {}).get("structData", {})
-            if sd and str(sd.get("user", "")) == str(user_id):
+            if sd:
                 results.append(sd)
         return results
     except Exception as e:
