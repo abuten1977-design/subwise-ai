@@ -26,6 +26,11 @@ MODELS = [
     "gemini-2.5-flash",
 ]
 
+# Vertex AI Search config
+PROJECT_ID = os.environ.get('GCP_PROJECT', 'autofriend-app-1773430739')
+SEARCH_ENGINE = f"projects/{PROJECT_ID}/locations/global/collections/default_collection/engines/subscriptions-engine"
+SEARCH_DATASTORE = f"projects/{PROJECT_ID}/locations/global/collections/default_collection/dataStores/subscriptions-store"
+
 def _get_secret(secret_id, version_id="latest"):
     if secret_id not in _cache:
         project_id = os.environ.get('GCP_PROJECT', 'autofriend-app-1773430739')
@@ -281,6 +286,135 @@ def _handle_web_chat(text, user_id):
     _append_history(user_id, "bot", reply)
     return {"action": action, "reply": reply}
 
+# === V2: Vertex AI Search ===
+
+def _get_user_mode(user_id):
+    doc = db.collection("user_settings").document(str(user_id)).get()
+    if doc.exists:
+        return doc.to_dict().get("mode", "v1")
+    return "v1"
+
+def _set_user_mode(user_id, mode):
+    db.collection("user_settings").document(str(user_id)).set({"mode": mode}, merge=True)
+
+def _sync_sub_to_search(user_id, sub_data):
+    """Синхронизирует подписку в Vertex AI Search data store."""
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        creds, _ = google.auth.default()
+        creds.refresh(google.auth.transport.requests.Request())
+        token = creds.token
+
+        doc_id = f"{user_id}_{sub_data['name']}".replace(" ", "_").replace("/", "_")
+        import base64
+        text = f"{sub_data.get('name','')} {sub_data.get('cost',0)} {sub_data.get('currency','$')} renewal {sub_data.get('renewal_date','')} user {user_id}"
+        url = f"https://discoveryengine.googleapis.com/v1/{SEARCH_DATASTORE}/branches/default_branch/documents?documentId={doc_id}"
+        resp = httpx.post(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "x-goog-user-project": PROJECT_ID
+        }, json={
+            "id": doc_id,
+            "structData": {**sub_data, "user": str(user_id)},
+            "content": {"mimeType": "text/plain", "rawBytes": base64.b64encode(text.encode()).decode()}
+        }, timeout=10)
+        print(f"Search sync: {doc_id} -> {resp.status_code}")
+    except Exception as e:
+        print(f"Search sync error: {e}")
+
+def _search_subs(user_id, query):
+    """Ищет подписки через Vertex AI Search."""
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        creds, _ = google.auth.default()
+        creds.refresh(google.auth.transport.requests.Request())
+        token = creds.token
+
+        url = f"https://discoveryengine.googleapis.com/v1/{SEARCH_ENGINE}/servingConfigs/default_search:search"
+        resp = httpx.post(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "x-goog-user-project": PROJECT_ID
+        }, json={
+            "query": f"{query} user {user_id}",
+            "pageSize": 10
+        }, timeout=10)
+        if resp.status_code != 200:
+            print(f"Search error: {resp.status_code} {resp.text[:200]}")
+            return []
+        results = []
+        for r in resp.json().get("results", []):
+            sd = r.get("document", {}).get("structData", {})
+            if sd and str(sd.get("user", "")) == str(user_id):
+                results.append(sd)
+        return results
+    except Exception as e:
+        print(f"Search error: {e}")
+        return []
+
+def _handle_ai_v2(chat_id, text):
+    """V2: использует Vertex AI Search для поиска подписок."""
+    search_results = _search_subs(chat_id, text)
+    subs_text = "\n".join([f"- {s.get('name','')} ({s.get('cost',0)} {s.get('currency','$')}) {s.get('renewal_date','')}" for s in search_results])
+    if not subs_text:
+        subs_text = "Подписок не найдено по запросу."
+
+    savings = _get_savings(chat_id)
+    history = _append_history(chat_id, "user", text)
+
+    v2_prompt = SYSTEM_PROMPT.format(
+        subs=f"[Найдено через поиск]:\n{subs_text}",
+        savings=_format_savings(savings),
+        today=time.strftime("%Y-%m-%d, %A")
+    ) + "\n\nВАЖНО: подписки найдены через поиск, не из полного списка. Если пользователь просит полный список — скажи что нужно уточнить запрос."
+
+    try:
+        result = _ask_ai(text, [], savings, history)
+        # Подменяем subs в промпте через прямой вызов
+        api_key = _get_secret("gemini-api-key")
+        contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["text"]}]} for m in history]
+        body = {
+            "contents": contents,
+            "systemInstruction": {"parts": [{"text": v2_prompt}]},
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
+        }
+        for model in MODELS:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            try:
+                resp = httpx.post(url, json=body, timeout=25)
+                if resp.status_code in (429, 503):
+                    continue
+                resp.raise_for_status()
+                raw = _extract_text(resp.json())
+                if not raw:
+                    continue
+                raw = raw.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                    if raw.endswith("```"):
+                        raw = raw[:-3]
+                    raw = raw.strip()
+                result = json.loads(raw)
+                break
+            except Exception as e:
+                print(f"V2 {model} error: {e}")
+                continue
+    except Exception as e:
+        print(f"V2 AI error: {e}")
+        _append_history(chat_id, "bot", "⏳ AI v2 временно недоступен.")
+        _send_message(chat_id, "⏳ AI v2 временно недоступен.")
+        return
+
+    action, reply = _handle_ai_result(result, chat_id)
+    # Синхронизируем новые подписки в Search
+    if action == "add":
+        _sync_sub_to_search(chat_id, {"name": result.get("name",""), "cost": result.get("cost",0), "currency": result.get("currency","$"), "renewal_date": result.get("renewal_date","")})
+    reply = f"[v2] {reply}"
+    _append_history(chat_id, "bot", reply)
+    _send_message(chat_id, reply)
+
 @functions_framework.http
 def telegram_bot_webhook(request):
     # CORS preflight
@@ -316,7 +450,19 @@ def telegram_bot_webhook(request):
             return "OK", 200
 
         if text == "/start":
-            _send_message(chat_id, f"Привет! Я Ася-бот 🤖\nТвой ID: {chat_id}\n\nПиши мне как обычно:\n• «добавь Netflix 5 долларов, продление 1 мая»\n• «добавь Spotify 149 крон, продление 15 мая»\n• «какие у меня подписки?»\n• «что посоветуешь удалить?»\n\nИли команды: /list /add /delete /web")
+            _send_message(chat_id, f"Привет! Я Ася-бот 🤖\nТвой ID: {chat_id}\n\nПиши мне как обычно:\n• «добавь Netflix 5 долларов, продление 1 мая»\n• «добавь Spotify 149 крон, продление 15 мая»\n• «какие у меня подписки?»\n• «что посоветуешь удалить?»\n\nИли команды: /list /add /delete /web /switch")
+        elif text.startswith("/switch"):
+            parts = text.split()
+            mode = parts[1] if len(parts) > 1 else None
+            if mode in ("v1", "v2"):
+                _set_user_mode(chat_id, mode)
+                if mode == "v2":
+                    _send_message(chat_id, "🔬 Переключено на v2 (Vertex AI Search). Ответы будут с пометкой [v2].\nДля возврата: /switch v1")
+                else:
+                    _send_message(chat_id, "✅ Переключено на v1 (стандартный режим).\nДля v2: /switch v2")
+            else:
+                current = _get_user_mode(chat_id)
+                _send_message(chat_id, f"Текущий режим: {current}\n\n/switch v1 — стандартный\n/switch v2 — Vertex AI Search (тест)")
         elif text == "/web":
             code = _generate_web_code(chat_id)
             _send_message(chat_id, f"🔑 Код для входа в веб-приложение:\n\n<code>{code}</code>\n\nВведи его на сайте. Код действует 5 минут.")
@@ -338,7 +484,11 @@ def telegram_bot_webhook(request):
             _user_subs(chat_id).document(name).delete()
             _send_message(chat_id, f"🗑 '{name}' удалена.")
         else:
-            _handle_ai_tg(chat_id, text)
+            mode = _get_user_mode(chat_id)
+            if mode == "v2":
+                _handle_ai_v2(chat_id, text)
+            else:
+                _handle_ai_tg(chat_id, text)
 
         return "OK", 200
     except Exception as e:
