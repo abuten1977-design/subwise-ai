@@ -355,29 +355,52 @@ def _search_subs(user_id, query):
         return []
 
 def _handle_ai_v2(chat_id, text):
-    """V2: использует Vertex AI Search для поиска подписок."""
-    search_results = _search_subs(chat_id, text)
-    subs_text = "\n".join([f"- {s.get('name','')} ({s.get('cost',0)} {s.get('currency','$')}) {s.get('renewal_date','')}" for s in search_results])
-    if not subs_text:
-        subs_text = "Подписок не найдено по запросу."
-
+    """V2: гибрид — действия через v1, разговор/анализ через Vertex AI Search."""
+    # Сначала пробуем через обычный AI — он определит action
+    subs = _get_subscriptions(chat_id)
     savings = _get_savings(chat_id)
     history = _append_history(chat_id, "user", text)
-
-    v2_prompt = SYSTEM_PROMPT.format(
-        subs=f"[Найдено через поиск]:\n{subs_text}",
-        savings=_format_savings(savings),
-        today=time.strftime("%Y-%m-%d, %A")
-    ) + "\n\nВАЖНО: подписки найдены через поиск, не из полного списка. Если пользователь просит полный список — скажи что нужно уточнить запрос."
-
+    
     try:
-        result = _ask_ai(text, [], savings, history)
-        # Подменяем subs в промпте через прямой вызов
+        result = _ask_ai(text, subs, savings, history)
+    except Exception as e:
+        print(f"V2 AI error: {e}")
+        _append_history(chat_id, "bot", "⏳ AI временно недоступен.")
+        _send_message(chat_id, "⏳ AI временно недоступен.")
+        return
+
+    action = result.get("action", "chat")
+
+    # Действия (add/delete/list/savings_*) — через старую логику
+    if action in ("add", "delete", "list", "savings_add", "savings_deposit", "savings_list", "savings_delete"):
+        act, reply = _handle_ai_result(result, chat_id)
+        # Синхронизируем в Search при добавлении
+        if action == "add":
+            _sync_sub_to_search(chat_id, {"name": result.get("name",""), "cost": result.get("cost",0), "currency": result.get("currency","$"), "renewal_date": result.get("renewal_date","")})
+        reply = f"[v2] {reply}"
+        _append_history(chat_id, "bot", reply)
+        _send_message(chat_id, reply)
+        return
+
+    # Разговор/советы/анализ — через Vertex AI Search
+    search_results = _search_subs(chat_id, text)
+    if search_results:
+        search_context = "\n".join([f"- {s.get('name','')} ({s.get('cost',0)} {s.get('currency','$')}) продление {s.get('renewal_date','')}" for s in search_results])
+        grounded_prompt = f"""Ты — умный ассистент Ася-бот. Сегодня: {time.strftime("%Y-%m-%d, %A")}.
+
+Данные пользователя (найдены через поиск):
+{search_context}
+
+Накопления:
+{_format_savings(savings)}
+
+Ответь на вопрос пользователя на основе этих данных. Будь дружелюбным и кратким. Отвечай на русском."""
+
         api_key = _get_secret("gemini-api-key")
         contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["text"]}]} for m in history]
         body = {
             "contents": contents,
-            "systemInstruction": {"parts": [{"text": v2_prompt}]},
+            "systemInstruction": {"parts": [{"text": grounded_prompt}]},
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
         }
         for model in MODELS:
@@ -388,30 +411,17 @@ def _handle_ai_v2(chat_id, text):
                     continue
                 resp.raise_for_status()
                 raw = _extract_text(resp.json())
-                if not raw:
-                    continue
-                raw = raw.strip()
-                if raw.startswith("```"):
-                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                    if raw.endswith("```"):
-                        raw = raw[:-3]
-                    raw = raw.strip()
-                result = json.loads(raw)
-                break
+                if raw:
+                    reply = f"[v2] {raw.strip()}"
+                    _append_history(chat_id, "bot", reply)
+                    _send_message(chat_id, reply)
+                    return
             except Exception as e:
-                print(f"V2 {model} error: {e}")
+                print(f"V2 grounded {model}: {e}")
                 continue
-    except Exception as e:
-        print(f"V2 AI error: {e}")
-        _append_history(chat_id, "bot", "⏳ AI v2 временно недоступен.")
-        _send_message(chat_id, "⏳ AI v2 временно недоступен.")
-        return
 
-    action, reply = _handle_ai_result(result, chat_id)
-    # Синхронизируем новые подписки в Search
-    if action == "add":
-        _sync_sub_to_search(chat_id, {"name": result.get("name",""), "cost": result.get("cost",0), "currency": result.get("currency","$"), "renewal_date": result.get("renewal_date","")})
-    reply = f"[v2] {reply}"
+    # Fallback — обычный ответ
+    reply = f"[v2] {result.get('reply', 'Не понял, попробуй ещё раз.')}"
     _append_history(chat_id, "bot", reply)
     _send_message(chat_id, reply)
 
